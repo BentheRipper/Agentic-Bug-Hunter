@@ -64,6 +64,21 @@ Confirm:
 - "Requires physical access / MFA device" = usually invalid
 - "Requires compromised victim account to work" = questionable, low severity at best
 
+**Privilege level isn't the relevant axis for every finding class.** For
+these — named explicitly here, not left to per-engagement judgment, since
+an open-ended "use your judgment" definition recreates the exact
+policy-as-instruction gap this tag exists to close — Q4 doesn't silently
+pass. Mark it and move straight to Q5:
+
+- Race conditions / TOCTOU
+- Business logic flaws (price manipulation, workflow/state bypass, quantity abuse)
+- Rate-limit or brute-force-dependent findings (OTP brute force, credential spraying)
+
+**Tag: `Q4: N/A — privilege-independent finding class`**
+
+Injection, XSS, SSRF, and IDOR/access-control findings stay
+privilege-relevant — Q4 keeps its normal meaning above for those.
+
 ---
 
 ### Q5: Is this already known or accepted behavior?
@@ -84,6 +99,14 @@ Search:
 - SSRF → hit an internal endpoint that returns data, not just DNS ping
 - SQLi → show actual data exfil from a real table, not just error message
 - IDOR → show actual other-user's data in response, not just a 200 status code
+- Business logic (race / price manipulation / workflow bypass) → show the
+  transaction actually settling in the manipulated state — the double-spend
+  confirmed in order history at double the expected quantity, the item
+  purchased and shipped below its real price, the skipped step's
+  irreversible action (funds moved, account upgraded) completed on the
+  other side — not just the request returning 200 or the race window
+  existing in theory. (Same standard as the CVSS table's race → double
+  spend, 7.5 High: the score assumes the spend actually happened.)
 
 **If you can only show "technically possible" → DOWNGRADE severity, not kill.**
 

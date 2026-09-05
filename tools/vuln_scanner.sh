@@ -286,6 +286,38 @@ if ! skip_has sqli; then
     if tool_ok nuclei; then
         log_step "nuclei SQLi templates..."
         nuclei -l "$ORDERED_SCAN" -tags sqli -severity medium,high,critical -silent ${BB_AUTH_ARGS[@]+"${BB_AUTH_ARGS[@]}"} -o "$FINDINGS_DIR/sqli/nuclei_sqli.txt" || true
+
+        # Tag nuclei's raw hits the same [CONFIRMED]/[POSSIBLE]/[INFORMATIONAL]
+        # way every other probe below already does, so consolidation picks
+        # them up. Previously nuclei_sqli.txt was written but never read
+        # again — a medium+ match was a silent drop, not a deliberate call.
+        #
+        # Severity is nuclei's own classification, extracted from its text
+        # output (`[template-id] [type] [severity] matched-at`). A template
+        # match alone isn't independently PoC-verified the way
+        # SQLI-POC-VERIFIED / SSTI-CONFIRMED are below, so nothing here is
+        # auto-[CONFIRMED]: critical/high -> [POSSIBLE] (run /validate
+        # before submitting, same bar as dalfox's unconfirmed XSS hits
+        # further down); medium -> [INFORMATIONAL] (do not submit without a
+        # chain — the same caution triage-validation already gives a bare
+        # nuclei `info` match, extended consistently to medium here).
+        : > "$FINDINGS_DIR/sqli/nuclei_tagged.txt"
+        if [ -s "$FINDINGS_DIR/sqli/nuclei_sqli.txt" ]; then
+            while IFS= read -r nuclei_line; do
+                [ -z "$nuclei_line" ] && continue
+                sev=$(echo "$nuclei_line" | grep -ioE '\[(critical|high|medium)\]' | head -1 | tr -d '[]' | tr 'A-Z' 'a-z')
+                sev_upper=$(echo "$sev" | tr 'a-z' 'A-Z')
+                case "$sev" in
+                    critical|high)
+                        echo "[POSSIBLE] [SQLI-NUCLEI-${sev_upper}] $nuclei_line" >> "$FINDINGS_DIR/sqli/nuclei_tagged.txt" ;;
+                    medium)
+                        echo "[INFORMATIONAL] [SQLI-NUCLEI-MEDIUM] $nuclei_line" >> "$FINDINGS_DIR/sqli/nuclei_tagged.txt" ;;
+                    *)
+                        echo "[INFORMATIONAL] [SQLI-NUCLEI-UNKNOWN] $nuclei_line" >> "$FINDINGS_DIR/sqli/nuclei_tagged.txt" ;;
+                esac
+            done < "$FINDINGS_DIR/sqli/nuclei_sqli.txt"
+            log_done "nuclei SQLi: $(file_lines "$FINDINGS_DIR/sqli/nuclei_tagged.txt") tagged hit(s)"
+        fi
     fi
     # 2b. Manual Linear-Scaling Probes
     PARAMS_FILE="$RECON_DIR/urls/with_params.txt"
@@ -567,6 +599,7 @@ CONF_RCE=$(grep -c "\[CONFIRMED\]" "$FINDINGS_DIR/upload/verified_rce_pocs.txt" 
 CONF_SSTI=$(grep -c "\[CONFIRMED\].*SSTI-CONFIRMED" "$FINDINGS_DIR/ssti/ssti_candidates.txt" 2>/dev/null || echo 0)
 CONF_SAML=$(grep -c "\[CONFIRMED\].*SAML-SIG-STRIP" "$FINDINGS_DIR/saml/findings.txt" 2>/dev/null || echo 0)
 POSS_SQLI=$(grep -c "\[POSSIBLE\].*SQLI-" "$FINDINGS_DIR/sqli/timebased_candidates.txt" 2>/dev/null || echo 0)
+POSS_SQLI_NUCLEI=$(grep -c "\[POSSIBLE\].*SQLI-NUCLEI-" "$FINDINGS_DIR/sqli/nuclei_tagged.txt" 2>/dev/null || echo 0)
 POSS_XSS=$(grep -c "\[POSSIBLE\]" "$FINDINGS_DIR/xss/dalfox_results.txt" 2>/dev/null || echo 0)
 POSS_MFA_RATE=$(grep -c "\[POSSIBLE\].*MFA-NO-RATE-LIMIT" "$FINDINGS_DIR/mfa/findings.txt" 2>/dev/null || echo 0)
 POSS_UPLOAD=$(grep -c "\[POSSIBLE\].*UPLOAD-ONLY-POC" "$FINDINGS_DIR/upload/verified_upload_pocs.txt" 2>/dev/null || echo 0)
@@ -576,6 +609,7 @@ INFO_SAML_ENDPOINTS=$(grep -c "\[INFORMATIONAL\].*SAML-ENDPOINT" "$FINDINGS_DIR/
 INFO_SAML_META=$(grep -c "\[INFORMATIONAL\].*SAML-METADATA-EXPOSED" "$FINDINGS_DIR/saml/findings.txt" 2>/dev/null || echo 0)
 INFO_CMS=$(find "$FINDINGS_DIR/metasploit/" -name "*.rc" 2>/dev/null | wc -l | tr -d ' ')
 INFO_MFA_MANIP=$(grep -c "\[INFORMATIONAL\].*MFA-RESPONSE-MANIP" "$FINDINGS_DIR/mfa/findings.txt" 2>/dev/null || echo 0)
+INFO_SQLI_NUCLEI=$(grep -c "\[INFORMATIONAL\].*SQLI-NUCLEI-" "$FINDINGS_DIR/sqli/nuclei_tagged.txt" 2>/dev/null || echo 0)
 {
     echo "Scan Date  : $(date)"
     echo "Target     : $TARGET"
@@ -588,6 +622,7 @@ INFO_MFA_MANIP=$(grep -c "\[INFORMATIONAL\].*MFA-RESPONSE-MANIP" "$FINDINGS_DIR/
     echo ""
     echo "=== POSSIBLE (run /validate before submitting) ==="
     printf "  SQLi delay candidates       : %s\n" "$POSS_SQLI"
+    printf "  SQLi nuclei (crit/high)     : %s\n" "$POSS_SQLI_NUCLEI"
     printf "  XSS (dalfox, unconfirmed)   : %s\n" "$POSS_XSS"
     printf "  MFA rate-limit              : %s\n" "$POSS_MFA_RATE"
     printf "  Upload (file-only)          : %s\n" "$POSS_UPLOAD"
@@ -599,13 +634,14 @@ INFO_MFA_MANIP=$(grep -c "\[INFORMATIONAL\].*MFA-RESPONSE-MANIP" "$FINDINGS_DIR/
     printf "  SAML metadata exposed       : %s\n" "$INFO_SAML_META"
     printf "  CMS detected                : %s\n" "$INFO_CMS"
     printf "  MFA response-manip canary   : %s\n" "$INFO_MFA_MANIP"
+    printf "  SQLi nuclei (medium)        : %s\n" "$INFO_SQLI_NUCLEI"
 } > "$FINDINGS_DIR/summary.txt"
 cat "$FINDINGS_DIR/summary.txt"
 
 python3 - "$FINDINGS_DIR" "$TARGET" \
     "$CONF_SQLI" "$CONF_RCE" "$CONF_SSTI" "$CONF_SAML" \
-    "$POSS_SQLI" "$POSS_XSS" "$POSS_MFA_RATE" "$POSS_UPLOAD" "$POSS_MFA_SKIP" \
-    "$INFO_UPLOAD" "$INFO_SAML_ENDPOINTS" "$INFO_SAML_META" "$INFO_CMS" "$INFO_MFA_MANIP" <<'PY'
+    "$POSS_SQLI" "$POSS_SQLI_NUCLEI" "$POSS_XSS" "$POSS_MFA_RATE" "$POSS_UPLOAD" "$POSS_MFA_SKIP" \
+    "$INFO_UPLOAD" "$INFO_SAML_ENDPOINTS" "$INFO_SAML_META" "$INFO_CMS" "$INFO_MFA_MANIP" "$INFO_SQLI_NUCLEI" <<'PY'
 import json
 import os
 import sys
@@ -627,22 +663,25 @@ payload = {
         },
         "possible": {
             "sqli_delay": nums[4],
-            "xss_dalfox": nums[5],
-            "mfa_rate_limit": nums[6],
-            "upload_file_only": nums[7],
-            "mfa_workflow_skip": nums[8],
+            "sqli_nuclei": nums[5],
+            "xss_dalfox": nums[6],
+            "mfa_rate_limit": nums[7],
+            "upload_file_only": nums[8],
+            "mfa_workflow_skip": nums[9],
         },
         "informational": {
-            "upload_paths": nums[9],
-            "saml_endpoints": nums[10],
-            "saml_metadata": nums[11],
-            "cms_detected": nums[12],
-            "mfa_response_manip": nums[13],
+            "upload_paths": nums[10],
+            "saml_endpoints": nums[11],
+            "saml_metadata": nums[12],
+            "cms_detected": nums[13],
+            "mfa_response_manip": nums[14],
+            "sqli_nuclei": nums[15],
         },
     },
     "artifacts": {
         "summary_txt": os.path.join(out_dir, "summary.txt"),
         "sqli_timebased": os.path.join(out_dir, "sqli", "timebased_candidates.txt"),
+        "sqli_nuclei_tagged": os.path.join(out_dir, "sqli", "nuclei_tagged.txt"),
         "rce": os.path.join(out_dir, "upload", "verified_rce_pocs.txt"),
         "ssti": os.path.join(out_dir, "ssti", "ssti_candidates.txt"),
         "saml": os.path.join(out_dir, "saml", "findings.txt"),

@@ -214,6 +214,44 @@ done
 awk '!seen[$0]++' "$ORDERED_SCAN" > "${ORDERED_SCAN}.tmp" && mv "${ORDERED_SCAN}.tmp" "$ORDERED_SCAN"
 [ ! -s "$ORDERED_SCAN" ] && log_err "No scan targets found" && exit 1
 
+# ── Scope Enforcement ───────────────────────────────────────────────────
+# vuln_scanner.sh is independently invokable (hunt.py --scan-only, or run
+# directly against any recon_dir) — recon having already scope-filtered its
+# output doesn't guarantee this URL list did. Every Check below reads
+# $ORDERED_SCAN, so filtering it here is the real enforcement point, not
+# a per-curl-call check scattered across a dozen probes.
+#
+# scope_checker.py matches hostnames only, not IPs (documented limitation)
+# — skip the filter when $TARGET is itself an IP/CIDR so an IP-based
+# engagement doesn't get zeroed out by a check that can't match its targets.
+if [[ "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
+    log_info "Scope Enforcement — skipped (scope_checker.py matches hostnames, not IPs; $TARGET target)"
+else
+    log_info "Scope Enforcement"
+    SCOPE_DOMAINS="${BBHUNT_SCOPE_DOMAINS:-$TARGET,*.$TARGET}"
+    AUDIT_LOG="${BBHUNT_AUDIT_LOG:-$BASE_DIR/hunt-memory/audit.jsonl}"
+    PRE_SCOPE_COUNT=$(file_lines "$ORDERED_SCAN")
+    python3 - "$BASE_DIR" "$SCOPE_DOMAINS" "${BBHUNT_EXCLUDE_DOMAINS:-}" \
+        "$ORDERED_SCAN" "$AUDIT_LOG" "${BBHUNT_SESSION_ID:-}" <<'PY'
+import sys
+base_dir, scope_domains, exclude_domains, target_file, audit_log_path, session_id = sys.argv[1:7]
+sys.path.insert(0, base_dir)
+from tools.scope_checker import ScopeChecker
+from memory.audit_log import AuditLog
+
+checker = ScopeChecker(
+    domains=[p.strip() for p in scope_domains.split(",") if p.strip()],
+    excluded_domains=[p.strip() for p in exclude_domains.split(",") if p.strip()],
+)
+audit_log = AuditLog(audit_log_path)
+checker.filter_file(target_file, audit_log=audit_log, session_id=session_id or None)
+PY
+    POST_SCOPE_COUNT=$(file_lines "$ORDERED_SCAN")
+    BLOCKED_COUNT=$((PRE_SCOPE_COUNT - POST_SCOPE_COUNT))
+    [ "$BLOCKED_COUNT" -gt 0 ] && log_warn "Scope check: blocked $BLOCKED_COUNT out-of-scope target(s) — see $AUDIT_LOG"
+    [ ! -s "$ORDERED_SCAN" ] && log_err "No in-scope scan targets remain after scope filter" && exit 1
+fi
+
 # ── Check 0: Upload Surface Discovery ──────────────────────────────────
 if ! skip_has upload; then
     log_info "Check 0: Upload Surface Discovery"

@@ -288,6 +288,56 @@ log_ok "Total unique subdomains: $TOTAL_SUBS"
 fi  # end of domain-only subdomain enum block
 
 # ============================================================
+# Phase 1.5: Scope Enforcement
+# ============================================================
+# Deterministic gate, not an LLM instruction — every request from Phase 2
+# onward is derived from subdomains/all.txt, so filtering it here is the
+# real "check before every outbound request" enforcement point for recon.
+# BBHUNT_SCOPE_DOMAINS lets a caller narrow to the program's actual scope
+# (e.g. "*.target.com,target.com" excluding a specific out-of-scope sub);
+# default is the target itself, so a plain `./recon_engine.sh target.com`
+# run is unaffected.
+#
+# scope_checker.py's is_in_scope() is hostname-pattern matching only — it
+# does not (and by its own docstring, cannot) match IP addresses. For
+# ip/cidr targets every entry in subdomains/all.txt IS an IP, so running
+# the filter would zero-out a legitimate scan, not enforce scope. Skip it
+# for those two target types; "list" and "domain" still get filtered.
+echo ""
+if [ "$TARGET_TYPE" = "ip" ] || [ "$TARGET_TYPE" = "cidr" ]; then
+    log_info "Phase 1.5: Scope Enforcement — skipped (scope_checker.py matches hostnames, not IPs; $TARGET_TYPE target)"
+else
+    log_info "Phase 1.5: Scope Enforcement"
+    SCOPE_DOMAINS="${BBHUNT_SCOPE_DOMAINS:-$TARGET,*.$TARGET}"
+    AUDIT_LOG="${BBHUNT_AUDIT_LOG:-$BASE_DIR/hunt-memory/audit.jsonl}"
+    PRE_SCOPE_COUNT=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
+    python3 - "$BASE_DIR" "$SCOPE_DOMAINS" "${BBHUNT_EXCLUDE_DOMAINS:-}" \
+        "$RECON_DIR/subdomains/all.txt" "$AUDIT_LOG" "${BBHUNT_SESSION_ID:-}" <<'PY'
+import sys
+base_dir, scope_domains, exclude_domains, target_file, audit_log_path, session_id = sys.argv[1:7]
+sys.path.insert(0, base_dir)
+from tools.scope_checker import ScopeChecker
+from memory.audit_log import AuditLog
+
+checker = ScopeChecker(
+    domains=[p.strip() for p in scope_domains.split(",") if p.strip()],
+    excluded_domains=[p.strip() for p in exclude_domains.split(",") if p.strip()],
+)
+audit_log = AuditLog(audit_log_path)
+checker.filter_file(target_file, audit_log=audit_log, session_id=session_id or None)
+PY
+    POST_SCOPE_COUNT=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
+    BLOCKED_COUNT=$((PRE_SCOPE_COUNT - POST_SCOPE_COUNT))
+    if [ "$BLOCKED_COUNT" -gt 0 ]; then
+        log_warn "Scope check: blocked $BLOCKED_COUNT out-of-scope host(s) — see $AUDIT_LOG"
+    fi
+    if [ "$POST_SCOPE_COUNT" -eq 0 ]; then
+        log_err "No in-scope hosts remain after scope filter — aborting"
+        exit 1
+    fi
+fi
+
+# ============================================================
 # Phase 2: HTTP Probing
 # ============================================================
 echo ""

@@ -10,6 +10,7 @@ Known limitation: IP addresses and CIDR ranges are NOT supported (returns False 
 """
 from __future__ import annotations  # PEP 604 union syntax on Python 3.9 (system /usr/bin/python3)
 
+import os
 import sys
 import argparse
 import json
@@ -101,12 +102,22 @@ class ScopeChecker:
                 out_of_scope.append(url)
         return in_scope, out_of_scope
 
-    def filter_file(self, input_path: str, output_path: str | None = None) -> tuple[int, int]:
+    def filter_file(
+        self,
+        input_path: str,
+        output_path: str | None = None,
+        audit_log=None,
+        session_id: str | None = None,
+    ) -> tuple[int, int]:
         """Filter a file of URLs (one per line) through scope check.
 
         Args:
             input_path: Path to file with URLs, one per line.
             output_path: If provided, write in-scope URLs here. If None, filter in-place.
+            audit_log: Optional AuditLog instance (memory.audit_log.AuditLog). When
+                given, every blocked URL gets a scope_check="fail" entry so the
+                block is on record, not just a stderr warning that scrolls away.
+            session_id: Passed through to audit_log entries when provided.
 
         Returns:
             (in_scope_count, out_of_scope_count)
@@ -126,6 +137,18 @@ class ScopeChecker:
                 f"WARNING: filtered {len(out_of_scope)} out-of-scope URLs from {input_path}",
                 file=sys.stderr,
             )
+            if audit_log is not None:
+                for url in out_of_scope:
+                    audit_log.log_request(
+                        url=url,
+                        # GET: recon-stage probes default to GET when no method is
+                        # specified yet — the block happens before any real request
+                        # or method choice, so this records "would-be GET, never sent".
+                        method="GET",
+                        scope_check="fail",
+                        session_id=session_id,
+                        error="blocked by scope_checker: not in allowlist",
+                    )
 
         return len(in_scope), len(out_of_scope)
 
@@ -200,8 +223,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--vuln-class", help="Optional vulnerability class to check")
     parser.add_argument("--input-file", help="Filter URLs from a file, one per line")
     parser.add_argument("--output", help="Output path for filtered in-scope URLs")
+    parser.add_argument(
+        "--audit-log",
+        help="Path to audit.jsonl. When given, every blocked asset/URL is logged "
+        "there with scope_check=fail (uses memory.audit_log.AuditLog).",
+    )
+    parser.add_argument("--session-id", help="session_id to attach to audit-log entries")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
     args = parser.parse_args(argv)
+
+    audit_log = None
+    if args.audit_log:
+        # Imported lazily so scope_checker.py stays dependency-free for callers
+        # that only want the pure ScopeChecker class (e.g. unit tests).
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from memory.audit_log import AuditLog  # noqa: E402
+
+        audit_log = AuditLog(args.audit_log)
 
     domains = _split_patterns(args.domain)
     excluded_domains = _split_patterns(args.exclude_domain)
@@ -226,6 +264,14 @@ def main(argv: list[str] | None = None) -> int:
         result["in_scope"] = in_scope
         if not in_scope:
             exit_code = 2
+            if audit_log is not None:
+                audit_log.log_request(
+                    url=args.asset,
+                    method="GET",
+                    scope_check="fail",
+                    session_id=args.session_id,
+                    error="blocked by scope_checker: not in allowlist",
+                )
 
     if args.vuln_class:
         allowed = checker.is_vuln_class_allowed(args.vuln_class)
@@ -236,7 +282,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.input_file:
         try:
-            in_count, out_count = checker.filter_file(args.input_file, args.output)
+            in_count, out_count = checker.filter_file(
+                args.input_file, args.output, audit_log=audit_log, session_id=args.session_id
+            )
         except OSError as exc:
             parser.error(str(exc))
         result["input_file"] = args.input_file

@@ -34,6 +34,8 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.auth_session import AuthSession, add_cli_args, session_from_args  # noqa: E402
 from tools.banner import print_banner  # noqa: E402
+from tools.scope_checker import ScopeChecker  # noqa: E402
+from memory.audit_log import AuditLog  # noqa: E402
 
 # Process-wide AuthSession. Populated in main() once flags are parsed and
 # read by run_recon / run_vuln_scan so every subprocess inherits the same
@@ -91,6 +93,9 @@ RECON_DIR = os.path.join(BASE_DIR, "recon")
 FINDINGS_DIR = os.path.join(BASE_DIR, "findings")
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
 WORDLIST_DIR = os.path.join(BASE_DIR, "wordlists")
+AUDIT_LOG_PATH = os.environ.get(
+    "BBHUNT_AUDIT_LOG", os.path.join(BASE_DIR, "hunt-memory", "audit.jsonl")
+)
 
 
 def _validate_domain_for_path(domain: str) -> str:
@@ -294,6 +299,45 @@ def select_targets(top_n=10):
 
     log("err", f"Targets file not found: {targets_file}")
     return []
+
+
+def _target_in_scope(domain: str) -> bool:
+    """Deterministic scope gate for hunt.py's own entry point.
+
+    hunt.py doesn't issue HTTP requests itself — it dispatches whole
+    domains to recon_engine.sh / vuln_scanner.sh (which have their own
+    scope filters on the URL lists they build). This is the domain-level
+    check: block a target outright before any subprocess is even launched
+    for it, and record the block, instead of relying on prose telling the
+    orchestrator to remember to check.
+
+    scope_checker.py matches hostnames only (documented limitation, not
+    fixed here) — IP/CIDR/domain-list targets are passed through unchecked,
+    same as recon_engine.sh's and vuln_scanner.sh's own skip for those types.
+    """
+    target_type = detect_target_type(domain)
+    if target_type in ("ip", "cidr", "list"):
+        return True
+
+    scope_patterns = os.environ.get("BBHUNT_SCOPE_DOMAINS", f"{domain},*.{domain}")
+    exclude_patterns = os.environ.get("BBHUNT_EXCLUDE_DOMAINS", "")
+    checker = ScopeChecker(
+        domains=[p.strip() for p in scope_patterns.split(",") if p.strip()],
+        excluded_domains=[p.strip() for p in exclude_patterns.split(",") if p.strip()],
+    )
+    if checker.is_in_scope(domain):
+        return True
+
+    log("err", f"{domain} is out of scope (BBHUNT_SCOPE_DOMAINS={scope_patterns!r}) — blocking, not hunting")
+    audit_log = AuditLog(AUDIT_LOG_PATH)
+    audit_log.log_request(
+        url=domain,
+        method="GET",
+        scope_check="fail",
+        session_id=os.environ.get("BBHUNT_SESSION_ID"),
+        error="blocked by hunt.py: target not in BBHUNT_SCOPE_DOMAINS allowlist",
+    )
+    return False
 
 
 def run_recon(domain, quick=False, scope_lock=False):
@@ -722,6 +766,11 @@ def hunt_target(
         "leads": False,
         "reports": 0,
     }
+
+    if not _target_in_scope(domain):
+        result["success"] = False
+        result["blocked"] = True
+        return result
 
     if not scan_only:
         result["recon"] = run_recon(domain, quick=quick)

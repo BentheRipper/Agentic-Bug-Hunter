@@ -41,11 +41,25 @@ AUDIT_REQUIRED = {"ts", "url", "method", "scope_check", "schema_version"}
 AUDIT_OPTIONAL = {"response_status", "finding_id", "session_id", "error"}
 AUDIT_ALL = AUDIT_REQUIRED | AUDIT_OPTIONAL
 
+# tool_notes.jsonl: tool-facing knowledge (a limitation hit, an ambiguous
+# situation, a gap worth fixing later) — the counterpart to journal.jsonl's
+# target-facing knowledge. Written by /flag. See memory/tool_notes.py.
+TOOL_NOTE_REQUIRED = {
+    "ts", "target", "phase", "observation", "classification",
+    "needs_followup", "schema_version",
+}
+TOOL_NOTE_OPTIONAL = {"engagement_id", "action_taken", "session_id"}
+TOOL_NOTE_ALL = TOOL_NOTE_REQUIRED | TOOL_NOTE_OPTIONAL
+
 VALID_RESULTS = {"confirmed", "rejected", "partial", "informational"}
 VALID_SEVERITIES = {"critical", "high", "medium", "low", "informational", "none"}
 VALID_ACTIONS = {"hunt", "recon", "validate", "report", "remember", "resume", "intel"}
 VALID_METHODS = {"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"}
 VALID_SCOPE_CHECKS = {"pass", "fail", "skip"}
+VALID_TOOL_NOTE_PHASES = {
+    "scope", "recon", "hunt", "validate", "report", "autopilot", "swarm", "other",
+}
+VALID_TOOL_NOTE_CLASSIFICATIONS = {"known_limitation", "newly_discovered"}
 
 
 class SchemaError(Exception):
@@ -339,6 +353,88 @@ def make_session_summary_entry(
     if auth_sid is not None:
         entry["session_id"] = auth_sid
     return validate_journal_entry(entry)
+
+
+def validate_tool_note_entry(entry: dict) -> dict:
+    """Validate a tool_notes.jsonl entry. Returns the entry if valid, raises SchemaError if not."""
+    if not isinstance(entry, dict):
+        raise SchemaError(f"Tool note entry must be a dict, got {type(entry).__name__}")
+
+    _check_required(entry, TOOL_NOTE_REQUIRED, "Tool note entry")
+    _check_unknown_fields(entry, TOOL_NOTE_ALL, "Tool note entry")
+    _check_schema_version(entry)
+    _check_timestamp(entry["ts"], "ts")
+
+    if not isinstance(entry["target"], str) or not entry["target"].strip():
+        raise SchemaError("Tool note entry: 'target' must be a non-empty string")
+
+    if entry["phase"] not in VALID_TOOL_NOTE_PHASES:
+        raise SchemaError(
+            f"Tool note entry: 'phase' must be one of {sorted(VALID_TOOL_NOTE_PHASES)}, got {entry['phase']!r}"
+        )
+
+    if not isinstance(entry["observation"], str) or not entry["observation"].strip():
+        raise SchemaError("Tool note entry: 'observation' must be a non-empty string")
+
+    if entry["classification"] not in VALID_TOOL_NOTE_CLASSIFICATIONS:
+        raise SchemaError(
+            "Tool note entry: 'classification' must be one of "
+            f"{sorted(VALID_TOOL_NOTE_CLASSIFICATIONS)}, got {entry['classification']!r}"
+        )
+
+    if not isinstance(entry["needs_followup"], bool):
+        raise SchemaError("Tool note entry: 'needs_followup' must be a boolean")
+
+    if "engagement_id" in entry:
+        if not isinstance(entry["engagement_id"], str) or not entry["engagement_id"].strip():
+            raise SchemaError("Tool note entry: 'engagement_id' must be a non-empty string")
+
+    if "action_taken" in entry:
+        if not isinstance(entry["action_taken"], str) or not entry["action_taken"].strip():
+            raise SchemaError("Tool note entry: 'action_taken' must be a non-empty string")
+
+    if "session_id" in entry:
+        if not isinstance(entry["session_id"], str) or not entry["session_id"].strip():
+            raise SchemaError("Tool note entry: 'session_id' must be a non-empty string")
+
+    return entry
+
+
+def make_tool_note_entry(
+    target: str,
+    phase: str,
+    observation: str,
+    classification: str,
+    needs_followup: bool,
+    engagement_id: str | None = None,
+    action_taken: str | None = None,
+    session_id: str | None = None,
+) -> dict:
+    """Create and validate a new tool_notes.jsonl entry with current timestamp.
+
+    If session_id is None, falls back to BBHUNT_SESSION_ID env var, same as
+    make_journal_entry/make_pattern_entry, so a flagged gap can be correlated
+    with the identity/run that surfaced it.
+    """
+    entry = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "target": target,
+        "phase": phase,
+        "observation": observation,
+        "classification": classification,
+        "needs_followup": needs_followup,
+        "schema_version": CURRENT_SCHEMA_VERSION,
+    }
+    if engagement_id is not None:
+        entry["engagement_id"] = engagement_id
+    if action_taken is not None:
+        entry["action_taken"] = action_taken
+    if session_id is None:
+        session_id = _current_session_id()
+    if session_id is not None:
+        entry["session_id"] = session_id
+
+    return validate_tool_note_entry(entry)
 
 
 def make_audit_entry(

@@ -48,6 +48,7 @@ class TestFindTargets:
         (tmp_path / "audit.jsonl").write_text("{}")
         (tmp_path / "patterns.jsonl").write_text("{}")
         (tmp_path / "journal.jsonl").write_text("{}")
+        (tmp_path / "tool_notes.jsonl").write_text("{}")
         (tmp_path / "other.jsonl").write_text("{}")  # not rotatable
 
         targets = _find_targets(tmp_path)
@@ -55,6 +56,7 @@ class TestFindTargets:
         assert "audit.jsonl" in names
         assert "patterns.jsonl" in names
         assert "journal.jsonl" in names
+        assert "tool_notes.jsonl" in names
         assert "other.jsonl" not in names
 
     def test_finds_nested_files(self, tmp_path):
@@ -114,6 +116,13 @@ class TestDoRotate:
         f.write_text("x" * 10)
         rotated = do_rotate(tmp_path, max_bytes=10_000, keep=3)
         assert rotated == 0
+
+    def test_rotates_tool_notes(self, tmp_path):
+        f = tmp_path / "tool_notes.jsonl"
+        f.write_text("x" * 200)
+        rotated = do_rotate(tmp_path, max_bytes=100, keep=3)
+        assert rotated == 1
+        assert (tmp_path / "tool_notes.jsonl.1").exists()
 
 
 class TestDoPurge:

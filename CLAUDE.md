@@ -44,6 +44,7 @@ This repo is a Claude Code plugin for professional bug bounty hunting across Hac
 | `/surface` | `/surface target.com` — ranked attack surface |
 | `/pickup` | `/pickup target.com` — pick up previous hunt (was `/resume`) |
 | `/remember` | `/remember` — log finding to hunt memory |
+| `/flag` | `/flag` — log a tool-facing gap/limitation/open question to `tool_notes.jsonl` (counterpart to `/remember`'s target-facing findings) |
 | `/intel` | `/intel target.com` — fetch CVE + disclosure intel |
 | `/token-scan` | `/token-scan <contract>` — meme coin/token rug pull scanner |
 | `/memory-gc` | `/memory-gc [--rotate|--purge-backups]` — inspect/rotate hunt-memory JSONL files (10MB cap, 3 backups) |
@@ -133,6 +134,7 @@ This repo is a Claude Code plugin for professional bug bounty hunting across Hac
 
 - `memory/pattern_db.py` — cross-target pattern learning
 - `memory/audit_log.py` — request audit log, rate limiter, circuit breaker
+- `memory/tool_notes.py` — tool-facing gaps/limitations log (`/flag`), the counterpart to `journal.jsonl`'s target-facing findings
 - `memory/rotation.py` — size-based JSONL rotation (10MB cap, keep 3 backups), auto-fired on append
 - `memory/schemas.py` — schema validation for all data
 

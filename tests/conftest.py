@@ -37,6 +37,12 @@ def patterns_path(tmp_hunt_dir):
 
 
 @pytest.fixture
+def tool_notes_path(tmp_hunt_dir):
+    """Path to a temporary tool_notes.jsonl file."""
+    return tmp_hunt_dir / "tool_notes.jsonl"
+
+
+@pytest.fixture
 def sample_journal_entry():
     """A valid journal entry dict."""
     return {
@@ -66,6 +72,21 @@ def sample_pattern_entry():
         "tech_stack": ["express", "postgresql"],
         "endpoint": "/api/v2/users/{id}/orders",
         "payout": 1500,
+        "schema_version": CURRENT_SCHEMA_VERSION,
+    }
+
+
+@pytest.fixture
+def sample_tool_note_entry():
+    """A valid tool_notes.jsonl entry dict."""
+    return {
+        "ts": "2026-03-24T21:00:00Z",
+        "target": "target.com",
+        "phase": "scope",
+        "observation": "is_in_scope() only matches hostname patterns — a vendor-hosted promo microsite under a different root domain was never flagged.",
+        "classification": "known_limitation",
+        "action_taken": "asked the human explicitly during scope confirmation",
+        "needs_followup": True,
         "schema_version": CURRENT_SCHEMA_VERSION,
     }
 

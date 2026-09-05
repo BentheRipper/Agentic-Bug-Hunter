@@ -3,7 +3,8 @@
 Memory GC — inspect and rotate hunt-memory JSONL files.
 
 Scans the hunt-memory directory for append-only logs (audit.jsonl,
-patterns.jsonl, journal.jsonl) and reports per-file size + backup usage.
+patterns.jsonl, journal.jsonl, tool_notes.jsonl) and reports per-file
+size + backup usage.
 Optionally rotates oversize files or purges existing backups.
 
 Usage:
@@ -33,7 +34,7 @@ from memory.rotation import (  # noqa: E402
 )
 
 # Files we consider rotatable. Anything else in the directory is left alone.
-ROTATABLE = ("audit.jsonl", "patterns.jsonl", "journal.jsonl")
+ROTATABLE = ("audit.jsonl", "patterns.jsonl", "journal.jsonl", "tool_notes.jsonl")
 
 
 def _human_size(n: int) -> str:

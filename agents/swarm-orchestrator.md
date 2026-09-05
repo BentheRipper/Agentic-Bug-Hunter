@@ -7,11 +7,11 @@ description: >-
   handoffs, or execute a complete pentest lifecycle from planning through
   reporting with autonomous agent delegation.
 tools:
-  - Read
-  - Write
-  - Edit
-  - Grep
-  - Glob
+  read: true
+  write: true
+  edit: true
+  grep: true
+  glob: true
 model: sonnet
 ---
 

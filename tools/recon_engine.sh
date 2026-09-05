@@ -234,8 +234,10 @@ else
 
 # Subfinder (passive, fast)
 if command -v subfinder &>/dev/null; then
-    log_step "Running subfinder..."
-    subfinder -d "$TARGET" -silent -all -t 50 -o "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || true
+    SUBFINDER_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 120 || echo 300)
+    log_step "Running subfinder (${SUBFINDER_TIMEOUT}s timeout)..."
+    timeout "$SUBFINDER_TIMEOUT" subfinder -d "$TARGET" -silent -all -t 50 -o "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || true
+    [ ! -f "$RECON_DIR/subdomains/subfinder.txt" ] && touch "$RECON_DIR/subdomains/subfinder.txt"
     log_done "subfinder: $(wc -l < "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || echo 0) subdomains"
 else
     log_warn "subfinder not installed — skipping"
@@ -253,8 +255,11 @@ else
 fi
 
 # crt.sh (certificate transparency)
-log_step "Querying crt.sh..."
-curl -s "https://crt.sh/?q=%25.$TARGET&output=json" 2>/dev/null \
+# crt.sh is a single request, not per-host, but it's also notoriously slow
+# under load — with no --max-time a stalled response hangs Phase 1
+# indefinitely and everything downstream (Phase 2 onward) waits on it.
+log_step "Querying crt.sh (max 60s)..."
+curl -s --max-time 60 "https://crt.sh/?q=%25.$TARGET&output=json" 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
@@ -274,8 +279,8 @@ except: pass
 log_done "crt.sh: $(wc -l < "$RECON_DIR/subdomains/crtsh.txt" 2>/dev/null || echo 0) subdomains"
 
 # Wayback subdomains
-log_step "Querying Wayback Machine for subdomains..."
-curl -s "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey" 2>/dev/null \
+log_step "Querying Wayback Machine for subdomains (max 60s)..."
+curl -s --max-time 60 "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey" 2>/dev/null \
     | sed -nE "s|.*://([a-zA-Z0-9._-]+\.$TARGET).*|\1|p" \
     | sort -u > "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || true
 log_done "wayback: $(wc -l < "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || echo 0) subdomains"
@@ -344,8 +349,16 @@ echo ""
 log_info "Phase 2: HTTP Probing"
 
 if [ -x "$HTTPX_BIN" ] && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
-    log_step "Probing with httpx (status, title, tech, content-length)..."
-    "$HTTPX_BIN" -l "$RECON_DIR/subdomains/all.txt" \
+    # Bounded by wall-clock timeout, not a host-count cap like nuclei/katana
+    # further down: every subdomain getting a live/dead status IS the point
+    # of this phase, and Rank depends on seeing all of them — truncating
+    # the input list here would silently drop hosts from ever being probed.
+    # A very large scope still finishes in bounded time; it just processes
+    # fewer of the list before the clock runs out, same tradeoff -rate-limit
+    # already makes, made explicit with a hard ceiling.
+    HTTPX_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 300 || echo 900)
+    log_step "Probing with httpx (status, title, tech, content-length; ${HTTPX_TIMEOUT}s timeout)..."
+    timeout "$HTTPX_TIMEOUT" "$HTTPX_BIN" -l "$RECON_DIR/subdomains/all.txt" \
         -silent \
         -status-code \
         -title \

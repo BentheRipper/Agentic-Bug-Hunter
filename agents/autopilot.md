@@ -107,14 +107,22 @@ scope = ScopeChecker(
 )
 ```
 
-Before loading scope, verify with the human:
+Before loading scope, verify with the human. `is_in_scope()` is a domain-
+pattern matcher — a related asset on a *different* domain (a vendor-run
+promo microsite, an acquired brand, a SaaS instance on someone else's
+root domain) won't match any pattern in the list below and gets silently
+excluded, not flagged. This confirmation is the one place that gap can
+still get caught, so ask about it explicitly instead of rubber-stamping
+whatever list scope resolution produced:
 ```
 SCOPE LOADED for target.com:
   In scope:  *.target.com, api.target.com
   Excluded:  blog.target.com, status.target.com
   No-test:   dos, social_engineering
 
-Confirm scope is correct? [y/n]
+Confirm scope is correct? Does this list include every domain tied to
+this client — including vendor-hosted platforms, acquired brands, or
+SaaS instances under a different root domain? [y/n]
 ```
 
 ## Step 2: Recon
